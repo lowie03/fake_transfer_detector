@@ -1,0 +1,110 @@
+timestamp,input_type,input_summary,prediction,confidence,reason,pipeline_used
+2026-04-06 01:05:22,text,"Acct:227****570
+DT:01/04/2026 12:50:18 PM
+NIP/STBC/PRAISE TOCHUKWU GODWI
+CR Amt:60,000.00
+Bal:72,039",FAKE,100.0%,"FAKE: Based on combined structural, text, and transaction analysis",sms
+2026-04-06 01:07:05,text,"Acct:227****570
+DT:25/03/2026 12:14:09 PM
+CIP CR/ DUNKWU  GODWIN UCHE/Tr
+CR Amt:100,000.00
+Bal:100,5",FAKE,100.0%,"FAKE: Based on combined structural, text, and transaction analysis",sms
+2026-04-06 01:07:19,text,"Acct:227****570
+DT:25/03/2026 12:14:09 PM
+CIP CR/ DUNKWU  GODWIN UCHE/Tr
+CR Amt:100,000.00
+Bal:100,5",FAKE,100.0%,"FAKE: Based on combined structural, text, and transaction analysis",sms
+2026-04-06 01:07:32,text,"Acct:227****570
+DT:25/03/2026 12:14:09 PM
+CIP CR/ DUNKWU  GODWIN UCHE/Tr
+CR Amt:100,000.00
+Bal:100,5",FAKE,100.0%,"FAKE: Based on combined structural, text, and transaction analysis",sms
+2026-04-06 01:07:34,text,"Acct:227****570
+DT:25/03/2026 12:14:09 PM
+CIP CR/ DUNKWU  GODWIN UCHE/Tr
+CR Amt:100,000.00
+Bal:100,5",FAKE,100.0%,"FAKE: Based on combined structural, text, and transaction analysis",sms
+2026-04-06 01:09:11,text,CIP CR/ DUNKWU  GODWIN UCHE/Tr,FAKE,100.0%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-06 01:09:13,text,CIP CR/ DUNKWU  GODWIN UCHE/Tr,FAKE,100.0%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-06 01:17:31,text,CIP CR/ DUNKWU  GODWIN UCHE/Pay,FAKE,100.0%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-06 01:17:34,text,CIP CR/ DUNKWU  GODWIN UCHE/Pay,FAKE,100.0%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-06 01:17:37,text,CIP CR/ DUNKWU  GODWIN UCHE/Pay,FAKE,100.0%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-06 01:17:39,text,CIP CR/ DUNKWU  GODWIN UCHE/Pay,FAKE,100.0%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-06 01:18:56,text,"Acct:227****570
+DT:21/03/2026 09:06:25 PM
+CIP CR/ ORE ADENIRAN/AT132 TRF
+CR Amt:13,000.00
+Bal:13,044",FAKE,100.0%,"FAKE: Based on combined structural, text, and transaction analysis",sms
+2026-04-06 01:19:46,text,CIP CR/ ORE ADENIRAN/AT132 TRF,FAKE,100.0%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 1/6 fields,sms
+2026-04-06 01:31:31,text,CIP CR/ ORE ADENIRAN/TRF,FAKE,99.4%,FAKE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-06 18:21:52,image,C:\Users\Praise\AppData\Local\Temp\tmpck_edn77.jpeg,GENUINE,73.7%,GENUINE: Image compression: 0.059 bytes/pixel; Brightness variation: 51.3,screenshot
+2026-04-06 18:23:51,image,C:\Users\Praise\AppData\Local\Temp\tmpbca41554.png,FAKE,98.5%,FAKE: Image compression: 0.224 bytes/pixel; Brightness variation: 78.6,screenshot
+2026-04-06 18:25:43,image,C:\Users\Praise\AppData\Local\Temp\tmpxfestjbv.png,FAKE,98.7%,FAKE: Image compression: 0.227 bytes/pixel; Brightness variation: 79.2,screenshot
+2026-04-07 03:30:42,text,"Acct: ****9775
+Amt: NGN300,000.00 CR
+Desc: -WEBAPPWORK TO GTBANK PLC DUNKWU GODWIN UCHE-FCMB
+Avail B",FAKE,88.0%,FAKE: Uses 'GTBANK' instead of expected 'GTWORLD',sms
+2026-04-07 03:33:22,text,-WEBAPPWORK TO GTBANK PLC DUNKWU GODWIN UCHE-FCMB,FAKE,88.1%,FAKE: Uses 'GTBANK' instead of expected 'GTWORLD'; Suspiciously round amount; Date format inconsistent with bank standard; Incomplete message: 0/6 fields,sms
+2026-04-07 03:34:43,text,TRF FRM DIVINE EHINOMEH ORIERE-MARTINS,GENUINE,98.9%,GENUINE: Incomplete message: 0/6 fields,sms
+2026-04-07 03:37:01,text,CIP CR/ ORE ADENIRAN/TRF,GENUINE,83.5%,GENUINE: Amount nearly equals balance (ratio=1.00); Incomplete message: 0/6 fields,sms
+2026-04-07 03:50:05,text,CIP CR/ DUNKWU  GODWIN UCHE/Tr,GENUINE,88.1%,GENUINE: Amount nearly equals balance (ratio=0.99); Suspiciously round amount; Incomplete message: 0/6 fields,sms
+2026-04-07 03:51:21,text,CIP CR/ DUNKWU  GODWIN UCHE/Tr,GENUINE,88.1%,GENUINE: Incomplete message: 0/6 fields,sms
+2026-04-07 03:51:44,text,CIP DR/ DUNKWU  GODWIN UCHE/Tr,GENUINE,88.1%,GENUINE: Incomplete message: 0/6 fields,sms
+2026-04-07 03:52:00,text,CIP CR/ DUNKWU  GODWIN UCHE/Transfer,FAKE,73.3%,FAKE: Incomplete message: 0/6 fields,sms
+2026-04-07 03:53:28,text,BEING PAYMENT FOR FINANCIAL REQUIREMENT FOR ONGOI,FAKE,85.5%,FAKE: Date format inconsistent with bank standard; Incomplete message: 0/6 fields,sms
+2026-04-07 03:53:45,text,BEING PAYMENT FOR FINANCIAL REQUIREMENT FOR ONGOI,FAKE,59.7%,FAKE: Incomplete message: 0/6 fields,sms
+2026-04-07 04:01:23,text,VIA GTWORLD FROM TEMITOPE ALAKIJA,FAKE,59.3%,FAKE: Incomplete message: 0/6 fields,sms
+2026-04-07 04:01:31,text,VIA GTWORLD FROM TEMITOPE ALAKIJA,FAKE,59.3%,FAKE: Incomplete message: 0/6 fields,sms
+2026-04-07 04:01:58,text,VIA GTWORLD FROM TEMITOPE ALAKIJA,FAKE,59.3%,FAKE: Incomplete message: 0/6 fields,sms
+2026-04-07 04:02:09,text,VIA GTWORLD FROM TEMITOPE ALAKIJA,FAKE,64.0%,FAKE: Incomplete message: 0/6 fields,sms
+2026-04-07 04:02:46,text,VIA GTWORLD FROM TEMITOPE ALAKIJA,GENUINE,95.6%,GENUINE: Incomplete message: 0/6 fields,sms
+2026-04-07 04:03:13,text,BEING PAYMENT FOR FINANCIAL REQUIREMENT FOR ONGOI,GENUINE,92.4%,GENUINE: Incomplete message: 0/6 fields,sms
+2026-04-07 04:04:18,text,"Acct: 022****681
+Amt: NGN20,000,000.00 CR
+Desc: -BEING PAYMENT FOR FINANCIAL REQUIREMENT FOR ONGOI
+A",FAKE,92.0%,"FAKE: Based on combined structural, text, and transaction analysis",sms
+2026-04-07 04:05:03,text,"REDIT ALERT
+
+Acc: 501****167
+Amt: NGN10,000.00
+Bal: NGN9,948.33
+Date: Sat, 14 March 2026
+Time: 06:33",FAKE,96.6%,FAKE: Incomplete message: 2/6 fields,sms
+2026-04-07 04:05:10,text,"REDIT ALERT
+
+Acc: 501****167
+Amt: NGN10,000.00
+Bal: NGN9,948.33
+Date: Sat, 14 March 2026
+Time: 06:33",FAKE,96.6%,FAKE: Incomplete message: 2/6 fields,sms
+2026-04-07 04:05:15,text,"REDIT ALERT
+
+Acc: 501****167
+Amt: NGN10,000.00
+Bal: NGN9,948.33
+Date: Sat, 14 March 2026
+Time: 06:33",FAKE,96.6%,FAKE: Incomplete message: 2/6 fields,sms
+2026-04-07 04:05:17,text,"REDIT ALERT
+
+Acc: 501****167
+Amt: NGN10,000.00
+Bal: NGN9,948.33
+Date: Sat, 14 March 2026
+Time: 06:33",FAKE,96.6%,FAKE: Incomplete message: 2/6 fields,sms
+2026-04-07 04:07:56,image,C:\Users\Praise\AppData\Local\Temp\tmpfoqfdjcg.jpeg,GENUINE,82.1%,GENUINE: Image compression: 0.055 bytes/pixel; Brightness variation: 29.2,screenshot
+2026-04-07 04:09:11,image,C:\Users\Praise\AppData\Local\Temp\tmpsuw2wxv2.jpeg,FAKE,80.8%,FAKE: Image compression: 0.071 bytes/pixel; Brightness variation: 102.8,screenshot
+2026-04-07 04:10:37,image,C:\Users\Praise\AppData\Local\Temp\tmp9tiaub6f.jpeg,FAKE,89.7%,FAKE: Image compression: 0.133 bytes/pixel; Brightness variation: 79.3,screenshot
+2026-04-07 04:10:57,image,C:\Users\Praise\AppData\Local\Temp\tmpcqbjq1lo.jpeg,GENUINE,82.1%,GENUINE: Image compression: 0.055 bytes/pixel; Brightness variation: 29.2,screenshot
+2026-04-07 04:11:57,image,C:\Users\Praise\AppData\Local\Temp\tmpdapkxz86.png,FAKE,98.8%,FAKE: Image compression: 0.218 bytes/pixel; Brightness variation: 85.7,screenshot
+2026-04-07 04:12:22,image,C:\Users\Praise\AppData\Local\Temp\tmpvr4970co.jpeg,FAKE,75.7%,FAKE: Image compression: 0.093 bytes/pixel; Brightness variation: 75.9,screenshot
+2026-04-07 04:12:34,image,C:\Users\Praise\AppData\Local\Temp\tmpgq7tls2p.jpeg,FAKE,70.2%,FAKE: Image compression: 0.093 bytes/pixel; Brightness variation: 70.0,screenshot
+2026-04-07 04:12:48,image,C:\Users\Praise\AppData\Local\Temp\tmpa5u0nsr6.jpeg,FAKE,70.9%,FAKE: Image compression: 0.076 bytes/pixel; Brightness variation: 79.5,screenshot
+2026-04-07 04:13:04,image,C:\Users\Praise\AppData\Local\Temp\tmpklzqwrkr.png,FAKE,98.8%,FAKE: Image compression: 0.217 bytes/pixel; Brightness variation: 85.7,screenshot
+2026-04-07 04:13:25,image,C:\Users\Praise\AppData\Local\Temp\tmplq0d38v3.png,FAKE,99.5%,FAKE: Image compression: 0.261 bytes/pixel; Brightness variation: 84.0,screenshot
+2026-04-07 04:13:42,image,C:\Users\Praise\AppData\Local\Temp\tmpq8ld3_q7.jpeg,GENUINE,63.3%,GENUINE: Image compression: 0.062 bytes/pixel; Brightness variation: 70.4,screenshot
+2026-04-07 04:13:58,image,C:\Users\Praise\AppData\Local\Temp\tmph9kkwt6y.jpeg,FAKE,96.4%,FAKE: Image compression: 0.186 bytes/pixel; Brightness variation: 73.6,screenshot
+2026-04-07 04:14:12,image,C:\Users\Praise\AppData\Local\Temp\tmp4pw1do5y.jpeg,GENUINE,66.9%,GENUINE: Image compression: 0.059 bytes/pixel; Brightness variation: 68.4,screenshot
+2026-04-07 04:14:40,image,C:\Users\Praise\AppData\Local\Temp\tmpi7o25e3i.jpeg,GENUINE,77.9%,GENUINE: Image compression: 0.058 bytes/pixel; Brightness variation: 46.0,screenshot
+2026-04-07 04:14:59,image,C:\Users\Praise\AppData\Local\Temp\tmpjv5yjftc.png,FAKE,98.7%,FAKE: Image compression: 0.227 bytes/pixel; Brightness variation: 79.2,screenshot
+2026-04-14 18:12:50,image,C:\Users\Praise\AppData\Local\Temp\tmpq8bxbb4s.png,FAKE,98.5%,FAKE: Image compression: 0.224 bytes/pixel; Brightness variation: 78.6,screenshot
+2026-04-19 17:01:35,image,C:\Users\Praise\AppData\Local\Temp\tmpe3tzxylg.png,FAKE,98.5%,FAKE: Image compression: 0.224 bytes/pixel; Brightness variation: 78.6,screenshot
