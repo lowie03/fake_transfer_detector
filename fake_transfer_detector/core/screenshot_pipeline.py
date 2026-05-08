@@ -1,235 +1,383 @@
 """
 Screenshot Forgery Detection Pipeline.
-Extracts image features + text structural features from bank transfer screenshots.
+Compatible with pipeline1_receipt_model_v3.pkl
 """
 
 import cv2
 import numpy as np
 import os
 import joblib
+import tempfile
 import pytesseract
-from scipy import ndimage
 
 from .text_cleaning import extract_text_structural_features
+from .explanations import build_screenshot_explanation
+
+BANK_TEMPLATES = {
+    'GTBank': {
+        'required_keywords': [
+            'receipt', 'success', 'sender', 'beneficiary',
+            'receiver bank', 'receiver account', 'transaction type',
+            'sessionid', 'remark'
+        ],
+        'status_keyword': 'success',
+        'wrong_status':   ['successful', 'completed', 'done'],
+        'expected_fields': [
+            'sender', 'beneficiary', 'receiver bank',
+            'receiver account', 'transaction type', 'sessionid'
+        ],
+        'amount_in_words': True,
+        'has_disclaimer':  True,
+        'disclaimer_keywords': ['subject to verification', 'fraud checks'],
+        'branding': ['gtco', 'gtworld', 'gtbank'],
+    },
+    'Moniepoint': {
+        'required_keywords': [
+            'transaction type', 'transaction status', 'beneficiary',
+            'sender name', 'source institution', 'transaction date',
+            'transaction reference', 'provider reference'
+        ],
+        'status_keyword': 'successful',
+        'wrong_status':   ['success', 'completed'],
+        'expected_fields': [
+            'transaction type', 'transaction status', 'beneficiary',
+            'beneficiary institution', 'sender name', 'source institution',
+            'transaction date', 'transaction reference'
+        ],
+        'amount_in_words': False,
+        'has_disclaimer':  False,
+        'branding': ['moniepoint', 'microfinance'],
+        'ref_prefix': 'trf|',
+    },
+    'Zenith': {
+        'required_keywords': [
+            'transaction receipt', 'transaction type', 'transaction date',
+            'debit account', 'credit account', 'beneficiary',
+            'bank', 'narration', 'status', 'amount'
+        ],
+        'status_keyword': 'success',
+        'wrong_status':   ['successful', 'completed'],
+        'expected_fields': [
+            'transaction type', 'transaction date', 'debit account',
+            'credit account', 'beneficiary', 'bank',
+            'narration', 'status', 'amount'
+        ],
+        'amount_in_words': False,
+        'has_disclaimer':  True,
+        'disclaimer_keywords': [
+            'zenith bank confirmation', 'fraud proof verification',
+            'zenithdirect@zenithbank.com'
+        ],
+        'branding': ['zenith'],
+    }
+}
+
+ALWAYS_EXCLUDE = [
+    'txt_total_chars', 'txt_total_words', 'txt_total_lines',
+    'txt_avg_word_length', 'txt_space_ratio', 'txt_numeric_field_count',
+    'img_sharpness_top_ratio', 'img_sharpness_mid_ratio',
+    'img_sharpness_bot_ratio', 'img_sharpness_region_cv',
+    'img_noise_region_cv', 'img_noise_max_min_ratio',
+    'img_edge_region_cv', 'img_hist_entropy',
+]
 
 
-def extract_image_features(image_path):
-    """
-    Extract visual forensic features from a screenshot image.
-    Detects manipulation through sharpness, noise, edge, and compression analysis.
-    """
-    features = {}
+def convert_pdf_to_image(pdf_path):
+    """Convert first PDF page to PNG. Tries PyMuPDF first, then pdf2image."""
+    output_dir = tempfile.mkdtemp()
 
+    # Method 1: PyMuPDF (no system dependency)
     try:
-        img = cv2.imread(image_path)
-        if img is None:
-            return None
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
-
-        # Image metadata
-        features['img_height'] = h
-        features['img_width'] = w
-        features['img_aspect_ratio'] = w / h if h > 0 else 0
-        features['img_total_pixels'] = h * w
-        file_size = os.path.getsize(image_path)
-        features['img_file_size'] = file_size
-        features['img_bytes_per_pixel'] = file_size / (h * w) if h * w > 0 else 0
-
-        # Sharpness analysis
-        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-        features['img_sharpness_mean'] = np.mean(np.abs(laplacian))
-        features['img_sharpness_std'] = np.std(laplacian)
-        features['img_sharpness_var'] = laplacian.var()
-
-        # Regional sharpness (detects inconsistent editing)
-        third_h = h // 3
-        if third_h > 0:
-            lap_top = cv2.Laplacian(gray[:third_h, :], cv2.CV_64F)
-            lap_mid = cv2.Laplacian(gray[third_h:2*third_h, :], cv2.CV_64F)
-            lap_bot = cv2.Laplacian(gray[2*third_h:, :], cv2.CV_64F)
-            features['img_sharpness_top'] = lap_top.var()
-            features['img_sharpness_mid'] = lap_mid.var()
-            features['img_sharpness_bot'] = lap_bot.var()
-            features['img_sharpness_region_var'] = np.var([lap_top.var(), lap_mid.var(), lap_bot.var()])
-        else:
-            features['img_sharpness_top'] = features['img_sharpness_mid'] = features['img_sharpness_bot'] = 0
-            features['img_sharpness_region_var'] = 0
-
-        # Noise analysis
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        noise = gray.astype(float) - blurred.astype(float)
-        features['img_noise_mean'] = np.mean(np.abs(noise))
-        features['img_noise_std'] = np.std(noise)
-
-        if third_h > 0:
-            features['img_noise_region_var'] = np.var([
-                np.std(noise[:third_h, :]),
-                np.std(noise[third_h:2*third_h, :]),
-                np.std(noise[2*third_h:, :])
-            ])
-        else:
-            features['img_noise_region_var'] = 0
-
-        # Edge analysis
-        edges = cv2.Canny(gray, 50, 150)
-        features['img_edge_density'] = np.sum(edges > 0) / (h * w) if h * w > 0 else 0
-
-        if third_h > 0:
-            edge_top = np.sum(edges[:third_h, :] > 0) / (third_h * w)
-            edge_mid = np.sum(edges[third_h:2*third_h, :] > 0) / (third_h * w)
-            edge_bot = np.sum(edges[2*third_h:, :] > 0) / ((h - 2*third_h) * w)
-            features['img_edge_region_var'] = np.var([edge_top, edge_mid, edge_bot])
-        else:
-            features['img_edge_region_var'] = 0
-
-        # Color/contrast
-        features['img_brightness_mean'] = np.mean(gray)
-        features['img_brightness_std'] = np.std(gray)
-        features['img_contrast'] = gray.max() - gray.min()
-
-        b, g, r = cv2.split(img)
-        features['img_channel_b_mean'] = np.mean(b)
-        features['img_channel_g_mean'] = np.mean(g)
-        features['img_channel_r_mean'] = np.mean(r)
-        features['img_channel_std_var'] = np.var([np.std(b), np.std(g), np.std(r)])
-
-        # Histogram
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
-        hist_norm = hist / hist.sum()
-        features['img_hist_entropy'] = -np.sum(hist_norm[hist_norm > 0] * np.log2(hist_norm[hist_norm > 0]))
-        features['img_hist_peak_count'] = np.sum((hist[1:-1] > hist[:-2]) & (hist[1:-1] > hist[2:]))
-        features['img_hist_uniformity'] = np.sum(hist_norm ** 2)
-
-        # Texture (Sobel)
-        sobelx = ndimage.sobel(gray.astype(float), axis=1)
-        sobely = ndimage.sobel(gray.astype(float), axis=0)
-        texture = np.sqrt(sobelx**2 + sobely**2)
-        features['img_texture_mean'] = np.mean(texture)
-        features['img_texture_std'] = np.std(texture)
-
-        # JPEG blockiness (fixed for odd dimensions)
-        if h >= 16 and w >= 16:
-            col_7 = gray[:, 7::8].astype(float)
-            col_8 = gray[:, 8::8].astype(float)
-            mc = min(col_7.shape[1], col_8.shape[1])
-            row_7 = gray[7::8, :].astype(float)
-            row_8 = gray[8::8, :].astype(float)
-            mr = min(row_7.shape[0], row_8.shape[0])
-
-            if mc > 0 and mr > 0:
-                h_diff = np.mean(np.abs(col_7[:, :mc] - col_8[:, :mc]))
-                v_diff = np.mean(np.abs(row_7[:mr, :] - row_8[:mr, :]))
-                col_3 = gray[:, 3::8].astype(float)
-                col_4 = gray[:, 4::8].astype(float)
-                mc_nb = min(col_3.shape[1], col_4.shape[1])
-                row_3 = gray[3::8, :].astype(float)
-                row_4 = gray[4::8, :].astype(float)
-                mr_nb = min(row_3.shape[0], row_4.shape[0])
-                h_diff_nb = np.mean(np.abs(col_3[:, :mc_nb] - col_4[:, :mc_nb])) if mc_nb > 0 else 0
-                v_diff_nb = np.mean(np.abs(row_3[:mr_nb, :] - row_4[:mr_nb, :])) if mr_nb > 0 else 0
-                features['img_jpeg_blockiness_h'] = h_diff - h_diff_nb
-                features['img_jpeg_blockiness_v'] = v_diff - v_diff_nb
-            else:
-                features['img_jpeg_blockiness_h'] = features['img_jpeg_blockiness_v'] = 0
-        else:
-            features['img_jpeg_blockiness_h'] = features['img_jpeg_blockiness_v'] = 0
-
+        import fitz
+        doc  = fitz.open(pdf_path)
+        page = doc.load_page(0)
+        pix  = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+        img_path = os.path.join(output_dir, 'converted.png')
+        pix.save(img_path)
+        doc.close()
+        return img_path
+    except ImportError:
+        pass
     except Exception as e:
-        print(f"Error extracting image features: {e}")
-        return None
+        print(f"[PDF] PyMuPDF failed: {e}")
 
+    # Method 2: pdf2image (needs poppler)
+    try:
+        from pdf2image import convert_from_path
+        images = convert_from_path(pdf_path, first_page=1, last_page=1, dpi=200)
+        if images:
+            img_path = os.path.join(output_dir, 'converted.png')
+            images[0].save(img_path, 'PNG')
+            return img_path
+    except Exception as e:
+        print(f"[PDF] pdf2image failed: {e}")
+
+    print("[PDF] All methods failed. Run: pip install PyMuPDF")
+    return None
+
+
+def extract_template_features(ocr_text, bank='unknown'):
+    """Bank-specific structural template validation."""
+    features   = {}
+    text_lower = ocr_text.lower() if ocr_text else ''
+
+    defaults = [
+        'tpl_required_keywords_found', 'tpl_required_keywords_total',
+        'tpl_required_keywords_ratio', 'tpl_expected_fields_found',
+        'tpl_expected_fields_total', 'tpl_expected_fields_ratio',
+        'tpl_status_correct', 'tpl_status_wrong',
+        'tpl_has_amount_symbol', 'tpl_amount_in_words_present',
+        'tpl_amount_in_words_expected', 'tpl_disclaimer_present',
+        'tpl_disclaimer_expected', 'tpl_branding_present',
+        'tpl_ref_format_correct', 'tpl_template_score',
+        'tpl_missing_fields_count', 'tpl_field_completeness_pct',
+    ]
+    for d in defaults:
+        features[d] = 0
+
+    if not text_lower or bank == 'unknown':
+        return features
+
+    template = BANK_TEMPLATES.get(bank)
+    if template is None:
+        return features
+
+    required     = template['required_keywords']
+    found_kw     = sum(1 for kw in required if kw in text_lower)
+    features['tpl_required_keywords_found'] = found_kw
+    features['tpl_required_keywords_total'] = len(required)
+    features['tpl_required_keywords_ratio'] = found_kw / len(required) if required else 0
+
+    expected     = template['expected_fields']
+    found_fields = sum(1 for f in expected if f in text_lower)
+    missing      = len(expected) - found_fields
+    features['tpl_expected_fields_found']  = found_fields
+    features['tpl_expected_fields_total']  = len(expected)
+    features['tpl_expected_fields_ratio']  = found_fields / len(expected) if expected else 0
+    features['tpl_missing_fields_count']   = missing
+    features['tpl_field_completeness_pct'] = (found_fields / len(expected) * 100) if expected else 0
+
+    features['tpl_status_correct'] = int(template['status_keyword'] in text_lower)
+    features['tpl_status_wrong']   = int(
+        any(ws in text_lower for ws in template.get('wrong_status', []))
+    )
+    features['tpl_has_amount_symbol'] = int('₦' in ocr_text or 'ngn' in text_lower)
+
+    features['tpl_amount_in_words_expected'] = int(bool(template.get('amount_in_words')))
+    if template.get('amount_in_words'):
+        number_words = [
+            'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+            'eight', 'nine', 'ten', 'hundred', 'thousand', 'million',
+            'naira', 'kobo', 'zero'
+        ]
+        features['tpl_amount_in_words_present'] = int(
+            any(nw in text_lower for nw in number_words)
+        )
+
+    features['tpl_disclaimer_expected'] = int(bool(template.get('has_disclaimer')))
+    if template.get('has_disclaimer'):
+        features['tpl_disclaimer_present'] = int(
+            any(dk in text_lower for dk in template.get('disclaimer_keywords', []))
+        )
+
+    features['tpl_branding_present'] = int(
+        any(b in text_lower for b in template.get('branding', []))
+    )
+
+    if template.get('ref_prefix'):
+        features['tpl_ref_format_correct'] = int(template['ref_prefix'] in text_lower)
+
+    scores = [
+        features['tpl_required_keywords_ratio'],
+        features['tpl_expected_fields_ratio'],
+        features['tpl_status_correct'],
+        features['tpl_branding_present'],
+    ]
+    if features['tpl_disclaimer_expected']:
+        scores.append(features['tpl_disclaimer_present'])
+    if features['tpl_amount_in_words_expected']:
+        scores.append(features['tpl_amount_in_words_present'])
+
+    features['tpl_template_score'] = float(np.mean(scores)) if scores else 0.0
     return features
 
 
+def _normalize_bank_name(bank):
+    """Normalize frontend bank names to match BANK_TEMPLATES keys."""
+    if not bank or bank == 'unknown':
+        return 'unknown'
+    bank_lower = bank.lower().strip()
+    # Strip common suffixes
+    for suffix in [' mfb', ' bank', ' plc', ' limited', ' ltd']:
+        if bank_lower.endswith(suffix):
+            bank_lower = bank_lower[:-len(suffix)].strip()
+    # Map variations
+    mapping = {
+        'moniepoint': 'Moniepoint',
+        'gtbank': 'GTBank',
+        'gtb': 'GTBank',
+        'zenith': 'Zenith',
+    }
+    return mapping.get(bank_lower, 'unknown')
+
+
+def run_ocr(image_path):
+    """OCR with preprocessing for better accuracy on receipt images.
+
+    Uses grayscale directly (no binarization) because Otsu thresholding
+    destroys text on colourful receipt backgrounds (Moniepoint blue,
+    GTBank orange, etc.).
+    """
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError(f"Cannot read: {image_path}")
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Upscale small images
+        h, w = gray.shape
+        if h < 800 or w < 600:
+            scale = max(800 / h, 600 / w)
+            gray = cv2.resize(gray, None, fx=scale, fy=scale,
+                              interpolation=cv2.INTER_CUBIC)
+
+        # Mild contrast enhancement (CLAHE) — preserves colour backgrounds
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+
+        raw_text = pytesseract.image_to_string(enhanced)
+        return raw_text.encode('utf-8', errors='replace').decode('utf-8')
+    except Exception as e:
+        print(f"[OCR] Error: {e}")
+        return ""
+
+
 class ScreenshotDetector:
-    """Screenshot forgery detection using image + text structural features."""
+    """
+    Screenshot forgery detector.
+    Compatible with pipeline1_receipt_model_v3.pkl
+    """
 
     def __init__(self, model_path):
-        """Load the trained model package."""
         package = joblib.load(model_path)
-        self.model = package['model_object']
-        self.scaler = package.get('scaler')
-        self.selector = package['feature_selector']
-        self.selected_features = package['selected_features']
-        self.all_feature_names = package['all_feature_names']
-        self.model_name = package['model_name']
-        self.metrics = package.get('metrics_loocv', {})
 
-    def predict(self, image_path):
+        self.model             = package['model_object']
+        self.scaler            = package.get('scaler')
+        self.selector          = package['feature_selector']
+        self.selected_features = package['selected_features']
+        self.model_name        = package['model_name']
+        self.metrics           = package.get(
+            'metrics_5fold', package.get('metrics_loocv', {})
+        )
+        self.all_safe_feature_names = package.get(
+            'all_safe_feature_names',
+            package.get('all_feature_names', [])
+        )
+
+        if not self.all_safe_feature_names:
+            raise ValueError(
+                "Model package missing feature names. "
+                "Re-run Pipeline 1 notebook."
+            )
+
+    def predict(self, image_path, bank='unknown'):
         """
-        Predict whether a screenshot is forged and explain why.
+        Predict whether a receipt is forged.
 
         Args:
-            image_path: Path to screenshot image file
-
-        Returns:
-            dict with prediction, confidence, reason, action
+            image_path: Path to .jpg/.png or .pdf file.
+            bank:       'GTBank', 'Moniepoint', or 'Zenith'.
         """
-        # Extract image features
-        img_feats = extract_image_features(image_path)
-        if img_feats is None:
-            return {
-                'prediction': 'ERROR',
-                'confidence': '0%',
-                'reason': 'Could not process image file.',
-                'action': '⚠️ Manual review required — image could not be analyzed.'
-            }
+        original_path = image_path
 
-        # Extract OCR text + structural features
-        try:
-            img = cv2.imread(image_path)
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            raw_text = pytesseract.image_to_string(gray)
-            raw_text = raw_text.encode('utf-8', errors='replace').decode('utf-8')
-        except:
-            raw_text = ""
+        # PDF handling
+        if isinstance(image_path, str) and image_path.lower().endswith('.pdf'):
+            converted = convert_pdf_to_image(image_path)
+            if converted is None:
+                return self._error(
+                    "Could not read this PDF. "
+                    "Please take a screenshot of the receipt and upload that instead."
+                )
+            image_path = converted
 
+        if not os.path.exists(image_path):
+            return self._error(
+                f"File not found: {os.path.basename(original_path)}"
+            )
+
+        img = cv2.imread(image_path)
+        if img is None:
+            return self._error(
+                "Could not open this image file. "
+                "Please ensure it is a valid JPG or PNG."
+            )
+
+        # OCR
+        raw_text = run_ocr(image_path)
+
+        # Normalize bank name from frontend (e.g. "Moniepoint MFB" → "Moniepoint")
+        bank = _normalize_bank_name(bank)
+
+        # Features
+        tpl_feats = extract_template_features(raw_text, bank)
         txt_feats = extract_text_structural_features(raw_text)
+        all_feats = {**tpl_feats, **txt_feats}
 
-        # Build feature vector
-        all_feats = {**img_feats, **txt_feats}
-        vec = np.array([[all_feats.get(f, 0) for f in self.all_feature_names]])
+        safe_names = [
+            f for f in self.all_safe_feature_names
+            if f not in ALWAYS_EXCLUDE
+        ]
+        vec = np.array([[all_feats.get(f, 0) for f in safe_names]])
         vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Select features and scale
         vec_selected = self.selector.transform(vec)
         if self.scaler is not None:
             vec_selected = self.scaler.transform(vec_selected)
 
-        # Predict
-        prob = self.model.predict_proba(vec_selected)[0][1]
+        prob       = self.model.predict_proba(vec_selected)[0][1]
         prediction = "FAKE" if prob >= 0.5 else "GENUINE"
+        confidence = prob if prediction == "FAKE" else (1 - prob)
 
-        # Build explanation
-        reasons = []
-        for feat in self.selected_features:
-            val = all_feats.get(feat, 0)
-            if 'sharpness_region_var' in feat and val > 100:
-                reasons.append(f"Inconsistent image sharpness ({val:.0f})")
-            elif 'noise_region_var' in feat and val > 5:
-                reasons.append(f"Uneven noise levels suggest editing ({val:.1f})")
-            elif 'edge_region_var' in feat and val > 0.001:
-                reasons.append(f"Edge pattern inconsistency ({val:.4f})")
-            elif 'jpeg_blockiness' in feat and abs(val) > 1:
-                reasons.append(f"Compression artifacts detected ({val:.2f})")
-            elif 'garbled_ratio' in feat and val > 0.05:
-                reasons.append(f"High OCR error rate ({val:.0%})")
-            elif 'bytes_per_pixel' in feat:
-                reasons.append(f"Image compression: {val:.3f} bytes/pixel")
-            elif 'brightness_std' in feat:
-                reasons.append(f"Brightness variation: {val:.1f}")
-
-        if not reasons:
-            reasons.append("Based on visual and structural pattern analysis")
+        # Plain-language explanation
+        reasons = build_screenshot_explanation(
+            tpl_feats, txt_feats, bank, prediction
+        )
 
         return {
-            'prediction': prediction,
-            'confidence': f"{prob*100:.1f}%" if prediction == "FAKE" else f"{(1-prob)*100:.1f}%",
-            'probability_fake': float(prob),
-            'reason': f"{prediction}: " + "; ".join(reasons[:4]),
-            'action': "⚠️ This screenshot shows signs of forgery. Do not accept as proof of payment."
-                      if prediction == "FAKE"
-                      else "✅ Screenshot appears authentic. Standard verification applies."
+            'prediction':             prediction,
+            'confidence':             f"{confidence * 100:.1f}%",
+            'probability_fake':       float(prob),
+            'reason':                 "; ".join(reasons),
+            'reasons_list':           reasons,
+            'action': (
+                "Do not confirm this payment. "
+                "Call your bank directly to verify the transaction."
+                if prediction == "FAKE"
+                else
+                "This receipt looks genuine. "
+                "You may proceed, but always confirm large payments with your bank."
+            ),
+            'ocr_text':               raw_text,
+            'bank':                   bank,
+            'template_score':         float(tpl_feats.get('tpl_template_score', 0)),
+            'field_completeness_pct': float(tpl_feats.get('tpl_field_completeness_pct', 0)),
+        }
+
+    def _error(self, message):
+        return {
+            'prediction':         'ERROR',
+            'confidence':         '0%',
+            'reason':             message,
+            'reasons_list':       [message],
+            'action':             'Please check the file and try again.',
+            'ocr_text':           '',
+        }
+
+    def get_model_info(self):
+        return {
+            'pipeline':          'Receipt Forgery Detection v3',
+            'model_name':        self.model_name,
+            'selected_features': self.selected_features,
+            'metrics':           self.metrics,
         }

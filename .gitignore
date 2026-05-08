@@ -1,0 +1,58 @@
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+.env
+.venv/
+
+# Logs
+*.log
+fake_transfer_detector/logs/*.csv
+logs/*.csv
+
+# Models
+*.pkl
+
+# Frontend Node.js
+node_modules/
+dist/
+build/
+.npm
+.eslintcache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PDF & test files
+*.pdf
+test_dummy.pdf
+Copy of SMEs.ipynb - Colab.pdf

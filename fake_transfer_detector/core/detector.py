@@ -1,176 +1,140 @@
-"""
-Unified Fake Transfer Detector.
-Routes input to the correct pipeline (screenshot or SMS) and returns
-a standardized prediction with explanation.
-"""
-
 import os
-import csv
 from datetime import datetime
-
 from .screenshot_pipeline import ScreenshotDetector
 from .sms_pipeline import SMSDetector
 
 
 class FakeTransferDetector:
     """
-    Unified detection system for fake mobile money transfers.
+    Unified detection system.
+    Routes input to Screenshot (image/PDF) or SMS (text) pipelines.
 
-    Accepts either:
-      - Screenshot image → routed to Pipeline 1 (image forensics)
-      - SMS text / CSV row → routed to Pipeline 2 (structural + NLP)
+    Model path resolves relative to this file's location, so it works
+    regardless of which directory uvicorn is started from.
 
-    Returns standardized prediction with XAI explanation.
+    Expected layout:
+      fake_transfer_detector/
+        core/
+          detector.py          ← this file
+          screenshot_pipeline.py
+          sms_pipeline.py
+        models/
+          pipeline1_receipt_model_v3.pkl
+          pipeline2_sms_model_v2.pkl
     """
 
-    def __init__(self, models_dir='models'):
-        """
-        Initialize both detection pipelines.
+    SCREENSHOT_MODEL_FILENAME = 'pipeline1_receipt_model_v3.pkl'
+    SMS_MODEL_FILENAME         = 'pipeline2_sms_model_v2.pkl'
 
-        Args:
-            models_dir: Directory containing .pkl model files
-        """
-        screenshot_path = os.path.join(models_dir, 'pipeline1_screenshot_model.pkl')
-        sms_path = os.path.join(models_dir, 'pipeline2_full_feature.pkl')
+    def __init__(self, models_dir=None):
+        if models_dir is None:
+            # Resolve models/ relative to THIS file, not the cwd.
+            # os.path.dirname(__file__)        = fake_transfer_detector/core/
+            # os.path.dirname(dirname(__file__))= fake_transfer_detector/
+            models_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'models'
+            )
 
-        # Load pipelines
-        self.screenshot_detector = None
-        self.sms_detector = None
+        screenshot_path = os.path.join(models_dir, self.SCREENSHOT_MODEL_FILENAME)
+        sms_path        = os.path.join(models_dir, self.SMS_MODEL_FILENAME)
 
+        print(f"[Detector] Looking for models in: {models_dir}")
+
+        # Screenshot pipeline
         if os.path.exists(screenshot_path):
-            self.screenshot_detector = ScreenshotDetector(screenshot_path)
-            print(f"✅ Screenshot pipeline loaded: {self.screenshot_detector.model_name}")
+            try:
+                self.screenshot_detector = ScreenshotDetector(screenshot_path)
+                print(f"[Detector] ✅ Screenshot model loaded")
+            except Exception as e:
+                print(f"[Detector] ❌ Screenshot model failed to load: {e}")
+                self.screenshot_detector = None
         else:
-            print(f"⚠️ Screenshot model not found at {screenshot_path}")
+            print(f"[Detector] ⚠️  Screenshot model not found: {screenshot_path}")
+            self.screenshot_detector = None
 
+        # SMS pipeline
         if os.path.exists(sms_path):
-            self.sms_detector = SMSDetector(sms_path)
-            print(f"✅ SMS pipeline loaded: {self.sms_detector.model_name}")
+            try:
+                self.sms_detector = SMSDetector(sms_path)
+                print(f"[Detector] ✅ SMS model loaded")
+            except Exception as e:
+                print(f"[Detector] ❌ SMS model failed to load: {e}")
+                self.sms_detector = None
         else:
-            print(f"⚠️ SMS model not found at {sms_path}")
+            print(f"[Detector] ⚠️  SMS model not found: {sms_path}")
+            self.sms_detector = None
 
-        # Logging
-        self.log_file = os.path.join(os.path.dirname(models_dir), 'logs', 'detection_log.csv')
-        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
-
-    def verify_transaction(self, input_data, input_type='auto'):
+    def verify_transaction(self, input_data, bank='unknown', input_type='auto'):
         """
-        Verify whether a transaction is fake or genuine.
+        Route verification to the correct pipeline.
 
         Args:
-            input_data: Either:
-                - str: file path to screenshot image, OR SMS text
-                - dict: CSV row with columns (bank, amount_ngn, balance_ngn,
-                        date, time, description)
-            input_type: 'image', 'text', or 'auto' (auto-detects)
-
-        Returns:
-            dict: {
-                'prediction': 'FAKE' or 'GENUINE',
-                'confidence': '87.5%',
-                'reason': 'Human-readable explanation',
-                'action': 'Recommended action for the vendor',
-                'pipeline_used': 'screenshot' or 'sms',
-                'timestamp': '2026-04-06 12:30:00'
-            }
+            input_data:  File path for images/PDFs, or str/dict for SMS.
+            bank:        'GTBank', 'Moniepoint', or 'Zenith' (exact match).
+            input_type:  'image', 'sms', or 'auto' (default).
         """
-        # Auto-detect input type
-        if input_type == 'auto':
-            if isinstance(input_data, str) and os.path.isfile(input_data):
-                ext = os.path.splitext(input_data)[1].lower()
-                if ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
-                    input_type = 'image'
-                else:
-                    input_type = 'text'
-            elif isinstance(input_data, dict):
-                input_type = 'text'
-            else:
-                input_type = 'text'
+        is_image = (
+            input_type == 'image'
+            or (
+                isinstance(input_data, str)
+                and input_data.lower().endswith(('.png', '.jpg', '.jpeg', '.pdf'))
+            )
+        )
 
-        # Route to correct pipeline
-        if input_type == 'image':
-            if self.screenshot_detector is None:
-                return {
-                    'prediction': 'ERROR',
-                    'confidence': '0%',
-                    'reason': 'Screenshot detection model not loaded.',
-                    'action': '⚠️ Please ensure pipeline1_screenshot_model.pkl is in the models/ folder.',
-                    'pipeline_used': 'none',
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-            result = self.screenshot_detector.predict(input_data)
+        if is_image:
+            if not self.screenshot_detector:
+                return self._error(
+                    f"Screenshot model not loaded. "
+                    f"Ensure {self.SCREENSHOT_MODEL_FILENAME} is in the models directory."
+                )
+            result = self.screenshot_detector.predict(input_data, bank=bank)
             result['pipeline_used'] = 'screenshot'
 
-        else:  # text or structured data
-            if self.sms_detector is None:
-                return {
-                    'prediction': 'ERROR',
-                    'confidence': '0%',
-                    'reason': 'SMS detection model not loaded.',
-                    'action': '⚠️ Please ensure pipeline2_full_feature.pkl is in the models/ folder.',
-                    'pipeline_used': 'none',
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-            result = self.sms_detector.predict(input_data)
+        else:
+            if not self.sms_detector:
+                return self._error(
+                    f"SMS model not loaded. "
+                    f"Ensure {self.SMS_MODEL_FILENAME} is in the models directory."
+                )
+            result = self.sms_detector.predict(input_data, bank=bank)
             result['pipeline_used'] = 'sms'
 
-        # Add timestamp
         result['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        # Log result
-        self._log_result(input_data, input_type, result)
-
         return result
 
-    def _log_result(self, input_data, input_type, result):
-        """Log prediction to CSV file."""
-        try:
-            file_exists = os.path.exists(self.log_file)
+    def is_ready(self):
+        """Return True if at least one pipeline is loaded."""
+        return (
+            self.screenshot_detector is not None
+            or self.sms_detector is not None
+        )
 
-            with open(self.log_file, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-
-                if not file_exists:
-                    writer.writerow([
-                        'timestamp', 'input_type', 'input_summary',
-                        'prediction', 'confidence', 'reason', 'pipeline_used'
-                    ])
-
-                # Summarize input
-                if input_type == 'image':
-                    summary = str(input_data)[:100]
-                elif isinstance(input_data, dict):
-                    summary = str(input_data.get('description', ''))[:100]
-                else:
-                    summary = str(input_data)[:100]
-
-                writer.writerow([
-                    result.get('timestamp', ''),
-                    input_type,
-                    summary,
-                    result.get('prediction', ''),
-                    result.get('confidence', ''),
-                    result.get('reason', ''),
-                    result.get('pipeline_used', '')
-                ])
-        except Exception as e:
-            pass  # Don't let logging errors break the prediction
+    def _error(self, message):
+        return {
+            'prediction':   'ERROR',
+            'confidence':   '0%',
+            'reason':       message,
+            'action':       'Manual review required.',
+            'pipeline_used':'none',
+            'timestamp':    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
 
     def get_model_info(self):
-        """Return information about loaded models."""
+        """Return metadata for both pipelines."""
         info = {}
-
         if self.screenshot_detector:
+            info['screenshot'] = self.screenshot_detector.get_model_info()
+        else:
             info['screenshot'] = {
-                'model': self.screenshot_detector.model_name,
-                'features': self.screenshot_detector.selected_features,
-                'metrics': self.screenshot_detector.metrics
+                'status': 'not loaded',
+                'file':   self.SCREENSHOT_MODEL_FILENAME
             }
-
         if self.sms_detector:
+            info['sms'] = self.sms_detector.get_model_info()
+        else:
             info['sms'] = {
-                'model': self.sms_detector.model_name,
-                'metrics': self.sms_detector.metrics
+                'status': 'not loaded',
+                'file':   self.SMS_MODEL_FILENAME
             }
-
         return info

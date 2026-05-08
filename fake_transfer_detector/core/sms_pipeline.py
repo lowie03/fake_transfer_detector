@@ -1,214 +1,342 @@
-"""
-SMS/CSV Text Forgery Detection Pipeline.
-Uses structured CSV features + TF-IDF + text structural features.
-"""
-
 import numpy as np
 import pandas as pd
 import re
 import joblib
 from scipy.sparse import hstack, csr_matrix
+from .text_cleaning import clean_sms_text, extract_text_structural_features
+from .explanations import build_sms_explanation
 
-from .text_cleaning import clean_text, extract_text_structural_features
+SMS_TEMPLATES = {
+    'GTBank': {
+        'required_keywords': ['acct:', 'amt:', 'ngn', 'cr', 'desc:', 'avail bal:', 'date:'],
+        'format_patterns': {
+            'date_format':    r'\d{4}-\d{2}-\d{2}',
+            'amount_format':  r'ngn[\d,]+\.\d{2}\s*cr',
+            'balance_format': r'avail bal:\s*ngn',
+            'account_format': r'\*{6}\d{4}',
+        },
+        'description_keywords': ['webappwork', 'being payment', 'via gtworld'],
+        'status_keyword': None,
+        'footer': None,
+    },
+    'Zenith': {
+        'required_keywords': ['acct:', 'dt:', 'cr amt:', 'bal:'],
+        'format_patterns': {
+            'date_format':    r'\d{2}/\d{2}/\d{4}',
+            'amount_format':  r'cr amt:\s*[\d,]+\.\d{2}',
+            'balance_format': r'bal:\s*[\d,]+\.\d{2}',
+            'account_format': r'\d{3}\*{4}\d{3}',
+        },
+        'description_keywords': ['cip cr/', 'nip/', 'dial *966#'],
+        'footer': 'dial *966#',
+    },
+    'Moniepoint': {
+        'required_keywords': ['credit alert', 'acc:', 'amt:', 'ngn', 'bal:', 'date:', 'time:', 'desc:'],
+        'format_patterns': {
+            'date_format':    r'[a-z]{3},\s*\d{2}\s+[a-z]+\s+\d{4}',
+            'amount_format':  r'amt:\s*ngn[\d,]+\.\d{2}',
+            'balance_format': r'bal:\s*ngn[\d,]+\.\d{2}',
+            'account_format': r'\d{3}\*{4}\d{3}',
+        },
+        'description_keywords': ['trf frm', 'credit alert'],
+        'header': 'credit alert',
+    }
+}
+
+# Features zeroed at inference time — they perfectly separated fake/genuine
+# in training only because fake data was generated without correct date formats.
+SMS_LEAKY_BLACKLIST = [
+    'sms_tpl_date_format_valid',
+    'sms_tpl_format_checks_passed',
+    'sms_tpl_header_present',
+    'sms_tpl_footer_present',
+    'meta_date_has_dash',
+    'meta_date_has_comma',
+    'meta_date_has_slash',
+    'meta_date_length',
+]
 
 
-def extract_csv_features(row):
-    """
-    Extract features from all columns of a CSV/dict row.
-    Works with both full CSV rows and text-only input.
-    """
-    features = {}
-    description = str(row.get('description', '')) if pd.notna(row.get('description', '')) else ''
+def extract_sms_template_features(sms_text, bank='unknown'):
+    """Validate SMS text against bank-specific template rules."""
+    features = {
+        'sms_tpl_keywords_found':       0,
+        'sms_tpl_keywords_total':       0,
+        'sms_tpl_keywords_ratio':       0,
+        'sms_tpl_date_format_valid':    0,
+        'sms_tpl_amount_format_valid':  0,
+        'sms_tpl_balance_format_valid': 0,
+        'sms_tpl_account_format_valid': 0,
+        'sms_tpl_desc_keyword_found':   0,
+        'sms_tpl_footer_present':       0,
+        'sms_tpl_header_present':       0,
+        'sms_tpl_template_score':       0,
+        'sms_tpl_format_checks_passed': 0,
+        'sms_tpl_format_checks_total':  4,
+    }
 
-    # Amount & Balance
-    try:
-        amount = float(row.get('amount_ngn', 0)) if pd.notna(row.get('amount_ngn', 0)) else 0
-    except:
-        amount = 0
-    try:
-        balance = float(row.get('balance_ngn', 0)) if pd.notna(row.get('balance_ngn', 0)) else 0
-    except:
-        balance = 0
+    text_lower = sms_text.lower() if isinstance(sms_text, str) else ''
+    if not text_lower or bank == 'unknown':
+        return features
 
-    features['amt_value'] = amount
-    features['amt_log'] = np.log1p(amount)
-    features['bal_value'] = balance
-    features['bal_log'] = np.log1p(balance)
-    features['amt_bal_ratio'] = (amount / balance) if balance > 0 else 0
-    features['bal_minus_amt'] = balance - amount
-    features['amt_is_round_1000'] = 1 if amount > 0 and amount % 1000 == 0 else 0
-    features['amt_is_round_10000'] = 1 if amount > 0 and amount % 10000 == 0 else 0
-    features['amt_gt_500k'] = 1 if amount > 500000 else 0
-    features['amt_lt_1k'] = 1 if 0 < amount < 1000 else 0
+    template = SMS_TEMPLATES.get(bank)
+    if template is None:
+        return features
 
-    # Date
+    required  = template['required_keywords']
+    found     = sum(1 for kw in required if kw in text_lower)
+    features['sms_tpl_keywords_found'] = found
+    features['sms_tpl_keywords_total'] = len(required)
+    features['sms_tpl_keywords_ratio'] = found / len(required) if required else 0
+
+    patterns      = template.get('format_patterns', {})
+    checks_passed = 0
+    for key, feat_key in [
+        ('date_format',    'sms_tpl_date_format_valid'),
+        ('amount_format',  'sms_tpl_amount_format_valid'),
+        ('balance_format', 'sms_tpl_balance_format_valid'),
+        ('account_format', 'sms_tpl_account_format_valid'),
+    ]:
+        if key in patterns:
+            match = 1 if re.search(patterns[key], text_lower) else 0
+            features[feat_key] = match
+            checks_passed += match
+
+    features['sms_tpl_format_checks_passed'] = checks_passed
+
+    desc_kws = template.get('description_keywords', [])
+    features['sms_tpl_desc_keyword_found'] = int(
+        any(dk in text_lower for dk in desc_kws)
+    )
+
+    if template.get('footer'):
+        features['sms_tpl_footer_present'] = int(template['footer'] in text_lower)
+    if template.get('header'):
+        features['sms_tpl_header_present'] = int(template['header'] in text_lower)
+
+    scores = [
+        features['sms_tpl_keywords_ratio'],
+        checks_passed / 4,
+        features['sms_tpl_desc_keyword_found'],
+    ]
+    features['sms_tpl_template_score'] = float(np.mean(scores))
+
+    return features
+
+
+def extract_sms_metadata_features(row):
+    """Extract structural and metadata features from a CSV row or dict."""
+    features   = {}
+    sms_text   = str(row.get('description', '')) if pd.notna(row.get('description', '')) else ''
+    text_lower = sms_text.lower()
+
+    def safe_float(val):
+        try:
+            return float(val) if pd.notna(val) else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    amount  = safe_float(row.get('amount_ngn', 0))
+    balance = safe_float(row.get('balance_ngn', 0))
+
+    features['meta_amount']             = amount
+    features['meta_amount_log']         = np.log1p(amount)
+    features['meta_balance']            = balance
+    features['meta_balance_log']        = np.log1p(balance)
+    features['meta_amt_bal_ratio']      = (amount / balance) if balance > 0 else 0
+    features['meta_bal_minus_amt']      = balance - amount
+    features['meta_amt_is_round_1000']  = int(amount > 0 and amount % 1000 == 0)
+    features['meta_amt_is_round_10000'] = int(amount > 0 and amount % 10000 == 0)
+    features['meta_amt_gt_500k']        = int(amount > 500000)
+
     date_str = str(row.get('date', '')) if pd.notna(row.get('date', '')) else ''
-    features['date_has_comma'] = 1 if ',' in date_str else 0
-    features['date_has_slash'] = 1 if '/' in date_str else 0
-    features['date_has_dash'] = 1 if '-' in date_str else 0
-    features['date_length'] = len(date_str)
+    features['meta_date_has_slash']  = int('/' in date_str)
+    features['meta_date_has_dash']   = int('-' in date_str)
+    features['meta_date_has_comma']  = int(',' in date_str)
+    features['meta_date_length']     = len(date_str)
 
-    match = re.search(r'(202[0-9])', date_str)
-    features['date_year'] = int(match.group(1)) if match else 0
-
-    # Time
     time_str = str(row.get('time', '')) if pd.notna(row.get('time', '')) else ''
-    features['time_is_missing'] = 1 if not time_str.strip() or time_str == 'nan' else 0
+    features['meta_time_missing'] = int(not time_str.strip() or time_str == 'nan')
 
-    # Extract hour
     hour = -1
-    t = time_str.strip()
-    if t and t != 'nan':
-        m = re.match(r'(\d{1,2}):(\d{2})\s*(am|pm)?', t, re.IGNORECASE)
+    if time_str.strip() and time_str != 'nan':
+        m = re.match(r'(\d{1,2}):(\d{2})\s*(am|pm)?', time_str, re.IGNORECASE)
         if m:
             hour = int(m.group(1))
             ampm = m.group(3)
             if ampm:
-                if ampm.lower() == 'pm' and hour != 12:
-                    hour += 12
-                elif ampm.lower() == 'am' and hour == 12:
-                    hour = 0
-        else:
-            m2 = re.match(r'(\d{1,2}):(\d{2})', t)
-            if m2:
-                hour = int(m2.group(1))
+                if ampm.lower() == 'pm' and hour != 12: hour += 12
+                elif ampm.lower() == 'am' and hour == 12: hour = 0
+    features['meta_time_hour']     = hour
+    features['meta_time_is_night'] = int(hour >= 22 or (0 <= hour < 6))
 
-    features['time_hour'] = hour
-    features['time_is_night'] = 1 if (hour >= 22 or (0 <= hour < 6)) else 0
-    features['time_is_business'] = 1 if (9 <= hour <= 17) else 0
-
-    # Bank
     bank = str(row.get('bank', 'unknown')) if pd.notna(row.get('bank', '')) else 'unknown'
     for b in ['GTBank', 'Zenith', 'Moniepoint']:
-        features[f'bank_is_{b.lower()}'] = 1 if bank == b else 0
+        features[f'meta_bank_is_{b.lower()}'] = int(bank == b)
 
-    # Account mask
     acct = str(row.get('account_masked', '')) if pd.notna(row.get('account_masked', '')) else ''
-    features['acct_length'] = len(acct)
-    features['acct_stars'] = acct.count('*')
-    features['acct_starts_with_digit'] = 1 if acct and acct[0].isdigit() else 0
+    features['meta_acct_length']       = len(acct)
+    features['meta_acct_stars']        = acct.count('*')
+    features['meta_acct_starts_digit'] = int(bool(acct) and acct[0].isdigit())
 
-    # Description patterns
-    features['desc_has_gtworld'] = 1 if 'GTWORLD' in description.upper() else 0
-    features['desc_has_gtbank'] = 1 if 'GTBANK' in description.upper() else 0
-    features['desc_has_credit_slash'] = 1 if 'CREDIT/' in description.upper() else 0
-    features['desc_has_cip_cr'] = 1 if 'CIP CR' in description.upper() else 0
-    features['desc_has_via'] = 1 if 'VIA' in description.upper() else 0
-    features['desc_has_transfer'] = 1 if 'TRANSFER' in description.upper() else 0
-    features['desc_has_reversed'] = 1 if 'REVERSED' in description.upper() else 0
-    features['desc_has_nip'] = 1 if 'NIP' in description.upper() else 0
-    features['desc_has_payment'] = 1 if 'PAYMENT' in description.upper() else 0
-    features['desc_has_cashout'] = 1 if 'CASHOUT' in description.upper() else 0
-    features['desc_has_rewards'] = 1 if 'REWARDS' in description.upper() else 0
-    features['desc_length'] = len(description)
-    features['desc_word_count'] = len(description.split()) if description else 0
-    features['desc_upper_ratio'] = sum(c.isupper() for c in description) / max(len(description), 1)
-    features['desc_has_slash'] = 1 if '/' in description else 0
+    features['meta_has_gtworld']        = int('gtworld' in text_lower)
+    features['meta_has_gtbank']         = int('gtbank' in text_lower and 'gtworld' not in text_lower)
+    features['meta_has_webappwork']     = int('webappwork' in text_lower)
+    features['meta_has_being_payment']  = int('being payment' in text_lower)
+    features['meta_has_credit_slash']   = int('credit/' in text_lower)
+    features['meta_has_cip_cr']         = int('cip cr' in text_lower)
+    features['meta_has_credit_alert']   = int('credit alert' in text_lower)
+    features['meta_has_trf_frm']        = int('trf frm' in text_lower)
+    features['meta_has_transfer']       = int('transfer' in text_lower)
+    features['meta_has_nip']            = int('nip/' in text_lower)
+    features['meta_has_dial_966']       = int('dial *966' in text_lower or '*966#' in text_lower)
+    features['meta_has_avail_bal']      = int('avail bal' in text_lower)
 
-    suspicious = ['cash prize', 'secure dept', 'admin office', 'revenue service',
-                  'unknown sender', 'account verify', 'customer care', 'help desk']
-    features['desc_has_suspicious_name'] = 1 if any(s in description.lower() for s in suspicious) else 0
+    suspicious_phrases = [
+        'click here', 'verify account', 'pending verification',
+        'confirm account', 'update details', 'suspend',
+        'expire', 'click link', 'www.', 'http'
+    ]
+    features['meta_has_suspicious_phrase'] = int(
+        any(s in text_lower for s in suspicious_phrases)
+    )
+
+    suspicious_names = [
+        'cash prize', 'secure dept', 'admin office', 'revenue service',
+        'unknown sender', 'account verify', 'customer care', 'help desk',
+        'lottery', 'claims dept', 'prize commission'
+    ]
+    features['meta_has_suspicious_name'] = int(
+        any(s in text_lower for s in suspicious_names)
+    )
+
+    lines = sms_text.split('\n')
+    features['meta_line_count']  = len(lines)
+    features['meta_char_count']  = len(sms_text)
+    features['meta_word_count']  = len(sms_text.split())
+
+    field_indicators = [
+        'acct', 'acc:', 'amt:', 'bal:', 'date:', 'time:',
+        'desc:', 'dt:', 'cr amt:', 'avail bal:'
+    ]
+    present = sum(1 for f in field_indicators if f in text_lower)
+    features['meta_fields_present']       = present
+    features['meta_fields_present_ratio'] = present / 10
 
     return features
 
 
 class SMSDetector:
-    """SMS/CSV forgery detection using structured + TF-IDF + text features."""
+    """
+    SMS transaction alert fraud detector.
+    Compatible with pipeline2_sms_model_v2.pkl
+    Labels: 1 = GENUINE, 0 = FAKE
+    """
 
     def __init__(self, model_path):
-        """Load the trained model package."""
         package = joblib.load(model_path)
-        self.model = package['model_object']
-        self.tfidf = package['tfidf_vectorizer']
-        self.scaler_csv = package['scaler_csv']
-        self.scaler_struct = package['scaler_struct']
-        self.csv_feature_names = package['csv_feature_names']
-        self.struct_feature_names = package['struct_feature_names']
-        self.tfidf_feature_names = package['tfidf_feature_names']
-        self.all_feature_names = package['all_feature_names']
-        self.model_name = package['model_name']
-        self.metrics = package.get('metrics_test', {})
 
-    def predict(self, input_data):
+        self.model               = package['model_object']
+        self.tfidf               = package.get('tfidf_vectorizer')
+        self.scaler_tpl          = package.get('scaler_tpl')
+        self.scaler_meta         = package.get('scaler_meta')
+        self.tpl_feature_names   = package.get('tpl_feature_names', [])
+        self.meta_feature_names  = package.get('meta_feature_names', [])
+        self.tfidf_feature_names = package.get('tfidf_feature_names', [])
+        self.all_feature_names   = package.get('all_feature_names', [])
+        self.sms_templates       = package.get('sms_templates', SMS_TEMPLATES)
+        self.metrics             = package.get('metrics_5fold', {})
+
+        missing = [k for k in ['tfidf_vectorizer', 'scaler_tpl', 'scaler_meta']
+                   if package.get(k) is None]
+        if missing:
+            raise ValueError(
+                f"SMS model package missing keys: {missing}. "
+                "Re-run Pipeline 2 notebook."
+            )
+
+    def _build_vector(self, sms_text, bank, row):
+        tpl_feats  = extract_sms_template_features(sms_text, bank)
+        meta_feats = extract_sms_metadata_features(row)
+
+        # Zero leaky features
+        for feat in SMS_LEAKY_BLACKLIST:
+            if feat in tpl_feats:  tpl_feats[feat]  = 0
+            if feat in meta_feats: meta_feats[feat] = 0
+
+        cleaned = clean_sms_text(sms_text)
+        if not cleaned.strip():
+            cleaned = 'empty'
+
+        tpl_vec  = np.array([[tpl_feats.get(f, 0)  for f in self.tpl_feature_names]])
+        meta_vec = np.array([[meta_feats.get(f, 0) for f in self.meta_feature_names]])
+        tpl_vec  = np.nan_to_num(tpl_vec,  nan=0.0)
+        meta_vec = np.nan_to_num(meta_vec, nan=0.0)
+
+        tpl_scaled  = self.scaler_tpl.transform(tpl_vec)
+        meta_scaled = self.scaler_meta.transform(meta_vec)
+        tfidf_vec   = self.tfidf.transform([cleaned])
+
+        combined = hstack([tfidf_vec, csr_matrix(tpl_scaled), csr_matrix(meta_scaled)])
+        return combined, tpl_feats, meta_feats
+
+    def predict(self, input_data, bank='unknown'):
         """
-        Predict whether an SMS/transaction is forged and explain why.
+        Predict and explain whether an SMS alert is fraudulent.
 
         Args:
-            input_data: Either a string (description text only) or a dict/Series
-                       with full CSV columns (bank, amount, balance, date, time, description)
-
-        Returns:
-            dict with prediction, confidence, reason, action
+            input_data: SMS text string, or dict/pd.Series with CSV columns.
+            bank:       'GTBank', 'Moniepoint', or 'Zenith'.
         """
-        # Handle string input (text only)
         if isinstance(input_data, str):
             row = {
-                'bank': 'unknown', 'account_masked': '', 'amount_ngn': 0,
-                'balance_ngn': 0, 'date': '', 'time': '', 'description': input_data
+                'bank': bank, 'account_masked': '', 'amount_ngn': 0,
+                'balance_ngn': 0, 'date': '', 'time': '',
+                'description': input_data, 'sms_text': input_data,
             }
         elif isinstance(input_data, pd.Series):
             row = input_data.to_dict()
         else:
             row = dict(input_data)
 
-        description = str(row.get('description', '')) if pd.notna(row.get('description', '')) else ''
+        if 'sms_text' not in row:
+            row['sms_text'] = row.get('description', '')
 
-        # 1. CSV features
-        csv_feats = extract_csv_features(row)
-        csv_vec = np.array([[csv_feats.get(f, 0) for f in self.csv_feature_names]])
-        csv_vec = np.nan_to_num(csv_vec, nan=0.0, posinf=0.0, neginf=0.0)
-        csv_vec_scaled = self.scaler_csv.transform(csv_vec)
+        sms_text = str(row.get('sms_text', '')) if pd.notna(row.get('sms_text', '')) else ''
+        bank     = str(row.get('bank', bank))
 
-        # 2. Structural features
-        struct_feats = extract_text_structural_features(description)
-        struct_vec = np.array([[struct_feats.get(f, 0) for f in self.struct_feature_names]])
-        struct_vec = np.nan_to_num(struct_vec, nan=0.0, posinf=0.0, neginf=0.0)
-        struct_vec_scaled = self.scaler_struct.transform(struct_vec)
+        combined, tpl_feats, meta_feats = self._build_vector(sms_text, bank, row)
 
-        # 3. TF-IDF features
-        cleaned = clean_text(description) if description else 'empty'
-        if not cleaned.strip():
-            cleaned = 'empty'
-        tfidf_vec = self.tfidf.transform([cleaned])
+        prob_genuine = self.model.predict_proba(combined)[0][1]
+        prob_fake    = 1 - prob_genuine
+        prediction   = "GENUINE" if prob_genuine >= 0.5 else "FAKE"
+        confidence   = prob_fake if prediction == "FAKE" else prob_genuine
 
-        # 4. Combine
-        combined = hstack([tfidf_vec, csr_matrix(csv_vec_scaled), csr_matrix(struct_vec_scaled)])
-
-        # 5. Predict
-        prob = self.model.predict_proba(combined)[0][1]
-        prediction = "FAKE" if prob >= 0.5 else "GENUINE"
-
-        # 6. Build explanation
-        reasons = []
-
-        if csv_feats.get('desc_has_suspicious_name', 0):
-            reasons.append("Suspicious sender name detected")
-        if csv_feats.get('desc_has_gtbank', 0) and not csv_feats.get('desc_has_gtworld', 0):
-            reasons.append("Uses 'GTBANK' instead of expected 'GTWORLD'")
-        if csv_feats.get('desc_has_credit_slash', 0):
-            reasons.append("'CREDIT/' prefix format detected")
-        if csv_feats.get('desc_has_reversed', 0):
-            reasons.append("Contains 'REVERSED' keyword")
-        if csv_feats.get('amt_bal_ratio', 0) > 0.95:
-            reasons.append(f"Amount nearly equals balance (ratio={csv_feats['amt_bal_ratio']:.2f})")
-        if csv_feats.get('amt_is_round_10000', 0):
-            reasons.append("Suspiciously round amount")
-        if csv_feats.get('amt_gt_500k', 0):
-            reasons.append("Unusually large amount (>500K NGN)")
-        if csv_feats.get('date_has_dash', 0) and csv_feats.get('bank_is_gtbank', 0):
-            reasons.append("Date format inconsistent with bank standard")
-        if struct_feats.get('txt_field_count', 0) < 3:
-            reasons.append(f"Incomplete message: {int(struct_feats.get('txt_field_count', 0))}/6 fields")
-
-        if not reasons:
-            reasons.append("Based on combined structural, text, and transaction analysis")
+        reasons = build_sms_explanation(tpl_feats, meta_feats, bank, prediction)
 
         return {
-            'prediction': prediction,
-            'confidence': f"{prob*100:.1f}%" if prediction == "FAKE" else f"{(1-prob)*100:.1f}%",
-            'probability_fake': float(prob),
-            'reason': f"{prediction}: " + "; ".join(reasons[:5]),
-            'action': "⚠️ Do not trust this alert. Verify with your bank directly."
-                      if prediction == "FAKE"
-                      else "✅ Alert appears authentic. Standard verification applies."
+            'prediction':       prediction,
+            'confidence':       f"{confidence * 100:.1f}%",
+            'probability_fake': float(prob_fake),
+            'reason':           "; ".join(reasons),
+            'reasons_list':     reasons,
+            'action': (
+                "Do not accept this payment. "
+                "Contact your bank directly to verify the transaction."
+                if prediction == "FAKE"
+                else
+                "This alert looks genuine. "
+                "Always verify large transactions through your bank's official app."
+            ),
+            'bank':             bank,
+            'template_score':   float(tpl_feats.get('sms_tpl_template_score', 0)),
+        }
+
+    def get_model_info(self):
+        return {
+            'pipeline':       'SMS Fraud Detection v2',
+            'tpl_features':   len(self.tpl_feature_names),
+            'meta_features':  len(self.meta_feature_names),
+            'tfidf_features': len(self.tfidf_feature_names),
+            'metrics':        self.metrics,
         }

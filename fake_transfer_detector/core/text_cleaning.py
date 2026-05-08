@@ -70,6 +70,41 @@ def clean_text(text):
     return text.strip()
 
 
+def clean_sms_text(text):
+    """
+    Clean SMS text for TF-IDF while preserving fraud-relevant patterns.
+    Removes PII but keeps structural banking keywords.
+    """
+    if not isinstance(text, str) or not text:
+        return "empty"
+
+    text = text.lower()
+
+    # Remove transaction IDs (long alphanumeric strings)
+    text = re.sub(r'\b[a-z0-9]{15,}\b', ' txn_id ', text)
+
+    # Remove phone numbers
+    text = re.sub(r'\b(?:070|080|081|090|091)\d{8}\b', ' ', text)
+    text = re.sub(r'\+?234\d{10}\b', ' ', text)
+
+    # Normalise currency amounts to placeholder
+    text = re.sub(r'(?:ngn|₦)\s?[\d,]+\.?\d*', ' currency_amount ', text)
+    text = re.sub(r'\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b', ' currency_amount ', text)
+
+    # Normalise account numbers
+    text = re.sub(r'\*{3,}\d{3,}', ' masked_account ', text)
+    text = re.sub(r'\d{3}\*{3,}\d{3}', ' masked_account ', text)
+
+    # Remove standalone numbers
+    text = re.sub(r'\b\d{5,}\b', ' ', text)
+
+    # Keep important banking keywords but clean noise
+    text = re.sub(r'[^a-z\s/:\-*]', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+
+    return text.strip() if text.strip() else "empty"
+
+
 def extract_text_structural_features(raw_text, bank='unknown'):
     """
     Extract STRUCTURAL features from text — not what it SAYS but HOW it's structured.
@@ -86,7 +121,8 @@ def extract_text_structural_features(raw_text, bank='unknown'):
                      'txt_has_amount', 'txt_amount_decimal_places',
                      'txt_has_balance', 'txt_has_date', 'txt_has_ref',
                      'txt_has_sender_name', 'txt_field_count',
-                     'txt_line_length_var', 'txt_consecutive_caps_count']:
+                     'txt_line_length_var', 'txt_consecutive_caps_count',
+                     'txt_ocr_confidence_proxy', 'txt_numeric_field_count']:
             features[key] = 0
         return features
 
@@ -98,7 +134,7 @@ def extract_text_structural_features(raw_text, bank='unknown'):
     features['txt_total_words'] = len(words)
     lines = text.split('\n')
     features['txt_total_lines'] = len(lines)
-    features['txt_avg_word_length'] = np.mean([len(w) for w in words]) if words else 0
+    features['txt_avg_word_length'] = float(np.mean([len(w) for w in words])) if words else 0
 
     # Character composition
     features['txt_digit_ratio'] = sum(c.isdigit() for c in text) / len(text) if len(text) > 0 else 0
@@ -112,6 +148,10 @@ def extract_text_structural_features(raw_text, bank='unknown'):
                       sum(c.isalpha() for c in w) / len(w) > 0.3)]
     features['txt_garbled_word_count'] = len(garbled_words)
     features['txt_garbled_ratio'] = len(garbled_words) / len(words) if words else 0
+
+    # OCR confidence proxy: ratio of recognisable words to total words
+    real_words = [w for w in words if w.isalpha() and len(w) >= 2]
+    features['txt_ocr_confidence_proxy'] = len(real_words) / len(words) if words else 0
 
     # Transaction ID validation
     text_lower = text.lower()
@@ -137,16 +177,25 @@ def extract_text_structural_features(raw_text, bank='unknown'):
 
     # Field presence
     features['txt_has_balance'] = 1 if re.search(r'(?:bal|balance|avail)', text_lower) else 0
-    features['txt_has_date'] = 1 if re.search(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}', text) else 0
-    features['txt_has_ref'] = 1 if re.search(r'(?:ref|reference|txn)', text_lower) else 0
-    features['txt_has_sender_name'] = 1 if re.search(r'(?:from|sender|to)\s+[A-Z][a-z]+', text) else 0
+    features['txt_has_date'] = 1 if (
+        re.search(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}', text) or
+        re.search(r'\d{1,2}\s+\w+\s+\d{4}', text)
+    ) else 0
+    features['txt_has_ref'] = 1 if re.search(r'(?:ref|reference|session|txn)', text_lower) else 0
+    features['txt_has_sender_name'] = 1 if re.search(r'(?:from|sender|beneficiary)\s+\w+', text_lower) else 0
     features['txt_field_count'] = (features['txt_has_transaction_id'] + features['txt_has_amount'] +
                                     features['txt_has_balance'] + features['txt_has_date'] +
                                     features['txt_has_ref'] + features['txt_has_sender_name'])
 
+    # Count numeric patterns (amounts, dates, refs) as separate signal
+    numeric_fields = re.findall(
+        r'\b\d{1,3}(?:,\d{3})*(?:\.\d{2})?\b|\b\d{6,}\b', text
+    )
+    features['txt_numeric_field_count'] = len(numeric_fields)
+
     # Line length variance
     line_lengths = [len(line.strip()) for line in lines if line.strip()]
-    features['txt_line_length_var'] = np.var(line_lengths) if len(line_lengths) > 1 else 0
+    features['txt_line_length_var'] = float(np.var(line_lengths)) if len(line_lengths) > 1 else 0
 
     # Consecutive capitals
     caps_runs = re.findall(r'[A-Z]{3,}', text)
