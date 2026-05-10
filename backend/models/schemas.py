@@ -46,6 +46,7 @@ class DetectionResult(BaseModel):
     risk_level: str
     pipeline: str = ""
     timestamp: str = ""
+    xai_insights: list[dict] = []
 
 
 class LogEntry(BaseModel):

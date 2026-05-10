@@ -13,6 +13,11 @@ import pytesseract
 from .text_cleaning import extract_text_structural_features
 from .explanations import build_screenshot_explanation
 
+# Configure tesseract path for Windows
+if os.name == 'nt':
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+
 BANK_TEMPLATES = {
     'GTBank': {
         'required_keywords': [
@@ -246,7 +251,14 @@ def run_ocr(image_path):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
 
-        raw_text = pytesseract.image_to_string(enhanced)
+        # Try OCR on both normal grayscale and enhanced, pick the one with more text
+        text_gray = pytesseract.image_to_string(gray)
+        text_enhanced = pytesseract.image_to_string(enhanced)
+
+        def count_alphanumeric(text):
+            return sum(c.isalnum() for c in text)
+
+        raw_text = text_enhanced if count_alphanumeric(text_enhanced) > count_alphanumeric(text_gray) else text_gray
         return raw_text.encode('utf-8', errors='replace').decode('utf-8')
     except Exception as e:
         print(f"[OCR] Error: {e}")
@@ -315,9 +327,24 @@ class ScreenshotDetector:
 
         # OCR
         raw_text = run_ocr(image_path)
+        
+        if not raw_text.strip():
+            return self._error(
+                "Failed to extract readable text from this image. "
+                "The image might be completely unreadable or the OCR engine failed."
+            )
 
         # Normalize bank name from frontend (e.g. "Moniepoint MFB" → "Moniepoint")
         bank = _normalize_bank_name(bank)
+
+        # DEBUG: Log the extracted text to a file so we can inspect it
+        try:
+            log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, "ocr_debug.txt"), "a", encoding="utf-8") as f:
+                f.write(f"\n--- OCR EXTRACTED FOR {bank} ---\n{raw_text}\n------------------\n")
+        except Exception as e:
+            print(f"Failed to write OCR debug log: {e}")
 
         # Features
         tpl_feats = extract_template_features(raw_text, bank)
@@ -341,8 +368,11 @@ class ScreenshotDetector:
 
         # Plain-language explanation
         reasons = build_screenshot_explanation(
-            tpl_feats, txt_feats, bank, prediction
+            tpl_feats, txt_feats, bank, prediction, raw_text=raw_text
         )
+
+        # XAI Insights
+        xai_insights = self._extract_xai(vec_selected)
 
         return {
             'prediction':             prediction,
@@ -350,6 +380,7 @@ class ScreenshotDetector:
             'probability_fake':       float(prob),
             'reason':                 "; ".join(reasons),
             'reasons_list':           reasons,
+            'xai_insights':           xai_insights,
             'action': (
                 "Do not confirm this payment. "
                 "Call your bank directly to verify the transaction."
@@ -364,12 +395,45 @@ class ScreenshotDetector:
             'field_completeness_pct': float(tpl_feats.get('tpl_field_completeness_pct', 0)),
         }
 
+    def _extract_xai(self, vec_selected):
+        try:
+            coefs = self.model.coef_[0]
+            features = vec_selected[0]
+            contributions = features * coefs
+            
+            insights = []
+            for name, contrib in zip(self.selected_features, contributions):
+                if abs(contrib) < 0.1:
+                    continue
+                    
+                hr_name = name.replace('_', ' ').title()
+                if 'Tpl Missing Fields' in hr_name: hr_name = "Missing expected bank fields"
+                elif 'Txt Garbled' in hr_name: hr_name = "Unreadable/corrupted text (OCR)"
+                elif 'Txt Field Count' in hr_name: hr_name = "Lack of readable structural fields"
+                elif 'Tpl Required Keywords Ratio' in hr_name: hr_name = "Missing mandatory keywords"
+                elif 'Tpl Branding Present' in hr_name: hr_name = "Bank branding/logo detection"
+                elif 'Tpl Status Correct' in hr_name: hr_name = "Transaction status wording"
+                elif 'Tpl Template Score' in hr_name: hr_name = "Overall layout conformity"
+                
+                insights.append({
+                    'feature': hr_name,
+                    'contribution': float(contrib),
+                    'type': 'FAKE' if contrib > 0 else 'GENUINE'
+                })
+            
+            insights.sort(key=lambda x: abs(x['contribution']), reverse=True)
+            return insights[:4]
+        except Exception as e:
+            print(f"[XAI] Error extracting XAI: {e}")
+            return []
+
     def _error(self, message):
         return {
             'prediction':         'ERROR',
             'confidence':         '0%',
             'reason':             message,
             'reasons_list':       [message],
+            'xai_insights':       [],
             'action':             'Please check the file and try again.',
             'ocr_text':           '',
         }

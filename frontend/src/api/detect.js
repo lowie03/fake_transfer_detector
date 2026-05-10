@@ -4,9 +4,7 @@ export const detectScreenshot = (file, bank = 'unknown') => {
   const form = new FormData()
   form.append('file', file)
   form.append('bank', bank)
-  return client.post('/detect/screenshot', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
+  return client.post('/detect/screenshot', form)
 }
 
 export const detectSMS = (text, bank = 'unknown') =>

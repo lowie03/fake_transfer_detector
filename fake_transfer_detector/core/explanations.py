@@ -12,7 +12,7 @@
 
 
 def build_screenshot_explanation(tpl_feats, txt_feats, bank, prediction,
-                                  compliance_score=None):
+                                  compliance_score=None, raw_text=None):
     """
     Build a plain-language explanation for a screenshot/receipt result.
 
@@ -45,35 +45,51 @@ def build_screenshot_explanation(tpl_feats, txt_feats, bank, prediction,
 
         if not lines:
             lines.append(
-                "The receipt structure matches what is expected for this bank."
+                "The receipt layout and details match what is expected for this bank."
             )
 
         return lines[:3]
 
     # ── FAKE path ─────────────────────────────────────────────────────────────
 
+    # 0. Bank Mismatch (Highest Priority)
+    if raw_text and bank != 'unknown':
+        text_lower = raw_text.lower()
+        other_banks = {'gtbank': 'GTBank', 'gtworld': 'GTBank', 'moniepoint': 'Moniepoint', 'zenith': 'Zenith', 'opay': 'OPay', 'palmpay': 'PalmPay'}
+        selected_lower = bank.lower()
+        
+        # If the selected bank name isn't found, but another bank's name IS found
+        if selected_lower not in text_lower:
+            for other_key, other_name in other_banks.items():
+                if other_key != selected_lower and other_key in text_lower:
+                    reasons.append(
+                        f"⚠️ Bank Mismatch: You selected {bank}, but this receipt has '{other_name}' "
+                        f"written on it. Fraudsters often use the wrong bank's receipt generator."
+                    )
+                    break
+
     # 1. Missing fields — most important, most understandable
     missing_n = tpl_feats.get('tpl_missing_fields_count', 0)
     total_n   = tpl_feats.get('tpl_expected_fields_total', 0)
     if missing_n > 0 and total_n > 0:
         reasons.append(
-            f"This receipt is missing {missing_n} out of {total_n} "
-            f"fields that a real {bank} receipt must have."
+            f"This receipt is missing {missing_n} crucial payment details (out of {total_n}) "
+            f"that every genuine {bank} receipt must show."
         )
 
     # 2. Required keywords not found
     kw_ratio = tpl_feats.get('tpl_required_keywords_ratio', 1.0)
     if kw_ratio < 0.5:
         reasons.append(
-            f"Key words and labels expected on a {bank} receipt "
-            f"were not found in this document."
+            f"The official words and labels that {bank} uses on their real receipts "
+            f"are largely missing from this image."
         )
 
     # 3. Wrong status wording
     if tpl_feats.get('tpl_status_wrong', 0):
         reasons.append(
-            f"The transaction status on this receipt uses wording "
-            f"that {bank} does not use on real receipts."
+            f"The payment status wording on this receipt is suspicious. "
+            f"{bank} does not use this exact phrasing on real receipts."
         )
 
     # 4. Missing disclaimer / footer
@@ -104,22 +120,21 @@ def build_screenshot_explanation(tpl_feats, txt_feats, bank, prediction,
     field_n  = txt_feats.get('txt_field_count', 6)
     if garbled > 0.15:
         reasons.append(
-            "The text on this receipt is unclear or corrupted. "
-            "This can happen if the image was edited or heavily compressed."
+            "The text on this receipt looks blurry, tampered with, or completely fake. "
+            "This usually happens when fraudsters use photo editing apps to change numbers."
         )
     elif field_n < 2:
         reasons.append(
-            "Very little readable text was found in this receipt. "
-            "A genuine receipt should clearly show the amount, date, "
-            "and reference number."
+            "We couldn't detect enough readable text. A genuine receipt should clearly "
+            "show the amount, date, and reference number without being blurry."
         )
 
     # 8. Low overall compliance — catch-all
     score = tpl_feats.get('tpl_template_score', 0)
     if not reasons and score < 0.4:
         reasons.append(
-            f"This receipt does not follow the standard layout "
-            f"of a genuine {bank} receipt."
+            f"The overall layout and design of this image does not match a "
+            f"genuine {bank} receipt."
         )
 
     # 9. Absolute fallback
@@ -132,7 +147,7 @@ def build_screenshot_explanation(tpl_feats, txt_feats, bank, prediction,
     return reasons[:4]
 
 
-def build_sms_explanation(tpl_feats, meta_feats, bank, prediction):
+def build_sms_explanation(tpl_feats, meta_feats, bank, prediction, sms_text=None):
     """
     Build a plain-language explanation for an SMS alert result.
 
@@ -162,12 +177,28 @@ def build_sms_explanation(tpl_feats, meta_feats, bank, prediction):
 
     # ── FAKE path ─────────────────────────────────────────────────────────────
 
+    # 0. Bank Mismatch
+    if sms_text and bank != 'unknown':
+        text_lower = sms_text.lower()
+        other_banks = {'gtbank': 'GTBank', 'gtworld': 'GTBank', 'moniepoint': 'Moniepoint', 'zenith': 'Zenith', 'opay': 'OPay', 'palmpay': 'PalmPay', 'firstbank': 'FirstBank', 'uba': 'UBA', 'access': 'Access Bank'}
+        selected_lower = bank.lower()
+        
+        # If the selected bank name isn't found, but another bank's name IS found
+        if selected_lower not in text_lower:
+            for other_key, other_name in other_banks.items():
+                if other_key != selected_lower and other_key in text_lower:
+                    reasons.append(
+                        f"⚠️ Bank Mismatch: You selected {bank}, but this SMS mentions '{other_name}'. "
+                        f"Fraudsters often copy/paste alert formats poorly."
+                    )
+                    break
+
     # 1. Missing required fields
     missing_n = (tpl_feats.get('sms_tpl_keywords_total', 0)
                  - tpl_feats.get('sms_tpl_keywords_found', 0))
     if missing_n > 0:
         reasons.append(
-            f"This SMS is missing {missing_n} field(s) that every real "
+            f"This SMS is missing {missing_n} crucial detail(s) that every real "
             f"{bank} transaction alert must include."
         )
 
@@ -188,7 +219,7 @@ def build_sms_explanation(tpl_feats, meta_feats, bank, prediction):
     # 4. Suspicious sender
     if meta_feats.get('meta_has_suspicious_name', 0):
         reasons.append(
-            "The sender name looks suspicious and does not match a real bank."
+            "The sender's name looks highly suspicious and does not come from an official bank."
         )
 
     # 5. Amount almost equals balance (common in fake screenshots)
@@ -212,8 +243,8 @@ def build_sms_explanation(tpl_feats, meta_feats, bank, prediction):
     fields_present = meta_feats.get('meta_fields_present', 10)
     if fields_present < 3:
         reasons.append(
-            f"This SMS only contains {fields_present} of the fields "
-            f"expected in a real bank alert (account, amount, balance, date)."
+            f"This SMS is far too short. It only contains {fields_present} of the details "
+            f"expected in a real bank alert (like account, amount, balance, date)."
         )
 
     # 8. Template score catch-all

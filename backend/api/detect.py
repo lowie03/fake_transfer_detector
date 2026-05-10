@@ -87,8 +87,11 @@ async def predict_screenshot(
     suffix = os.path.splitext(file.filename or "upload.png")[1] or ".png"
     tmp_path = None
     try:
+        content = await file.read()
+        print(f"[DEBUG] Received bank: {bank}")
+        print(f"[DEBUG] Received file: {file.filename}, size: {len(content)} bytes")
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(await file.read())
+            tmp.write(content)
             tmp_path = tmp.name
 
         result = detector.verify_transaction(tmp_path, bank=bank, input_type="image")
@@ -101,6 +104,7 @@ async def predict_screenshot(
             risk_level=_risk_level(confidence_pct, result.get("prediction", "")),
             pipeline=result.get("pipeline_used", "screenshot"),
             timestamp=result.get("timestamp", ""),
+            xai_insights=result.get("xai_insights", [])
         )
         _log_detection(detection)
         return detection
@@ -146,6 +150,7 @@ def predict_sms(
             risk_level=_risk_level(confidence_pct, result.get("prediction", "")),
             pipeline=result.get("pipeline_used", "sms"),
             timestamp=result.get("timestamp", ""),
+            xai_insights=result.get("xai_insights", [])
         )
         _log_detection(detection)
         return detection

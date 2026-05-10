@@ -312,7 +312,10 @@ class SMSDetector:
         prediction   = "GENUINE" if prob_genuine >= 0.5 else "FAKE"
         confidence   = prob_fake if prediction == "FAKE" else prob_genuine
 
-        reasons = build_sms_explanation(tpl_feats, meta_feats, bank, prediction)
+        reasons = build_sms_explanation(tpl_feats, meta_feats, bank, prediction, sms_text=sms_text)
+        
+        # XAI Insights
+        xai_insights = self._extract_xai(combined)
 
         return {
             'prediction':       prediction,
@@ -320,6 +323,7 @@ class SMSDetector:
             'probability_fake': float(prob_fake),
             'reason':           "; ".join(reasons),
             'reasons_list':     reasons,
+            'xai_insights':     xai_insights,
             'action': (
                 "Do not accept this payment. "
                 "Contact your bank directly to verify the transaction."
@@ -331,6 +335,41 @@ class SMSDetector:
             'bank':             bank,
             'template_score':   float(tpl_feats.get('sms_tpl_template_score', 0)),
         }
+
+    def _extract_xai(self, combined_vec):
+        try:
+            coefs = self.model.coef_[0]
+            features = combined_vec.toarray()[0] if hasattr(combined_vec, 'toarray') else combined_vec[0]
+            contributions = features * coefs
+            
+            insights = []
+            for name, contrib in zip(self.all_feature_names, contributions):
+                if abs(contrib) < 0.1:
+                    continue
+                    
+                hr_name = name.replace('_', ' ').title()
+                if 'Tpl Keywords' in hr_name: hr_name = "Presence of mandatory keywords"
+                elif 'Format Checks' in hr_name: hr_name = "Text format conformity"
+                elif 'Meta Has Suspicious Phrase' in hr_name: hr_name = "Suspicious phishing phrases"
+                elif 'Meta Amt Bal Ratio' in hr_name: hr_name = "Amount/Balance mathematical logic"
+                elif 'Tpl Desc Keyword' in hr_name: hr_name = "Bank-specific description format"
+                elif 'Meta Date Has' in hr_name: hr_name = "Date punctuation format"
+                
+                insights.append({
+                    'feature': hr_name,
+                    'contribution': float(contrib),
+                    'type': 'FAKE' if contrib < 0 else 'GENUINE' # In SMS: 1=GENUINE, 0=FAKE. So negative pushed towards FAKE.
+                })
+            
+            # Since 1=GENUINE, 0=FAKE in SMS model: 
+            # Negative log-odds contribution means the model was pushed towards FAKE (Class 0).
+            # Positive log-odds contribution means pushed towards GENUINE (Class 1).
+            # We already mapped 'type' based on this. Now we sort by absolute contribution.
+            insights.sort(key=lambda x: abs(x['contribution']), reverse=True)
+            return insights[:4]
+        except Exception as e:
+            print(f"[XAI] Error extracting SMS XAI: {e}")
+            return []
 
     def get_model_info(self):
         return {

@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { AlertTriangle, CheckCircle, Info, Zap } from 'lucide-react'
+import { AlertTriangle, CheckCircle, Info, Zap, Brain } from 'lucide-react'
 import Badge from './Badge'
 import ConfidenceBar from './ConfidenceBar'
 
@@ -48,6 +48,45 @@ export default function ResultCard({ result }) {
             <p className="text-sm text-slate-700 leading-relaxed bg-slate-50 rounded-xl px-4 py-3 border border-slate-100">
               {result.explanation}
             </p>
+          </div>
+        )}
+
+        {result.xai_insights && result.xai_insights.length > 0 && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+              <Brain size={12} /> AI Technical Insights
+            </p>
+            <div className="space-y-2.5">
+              {result.xai_insights.map((insight, idx) => {
+                const isFakeSignal = insight.type === 'FAKE';
+                const barColor = isFakeSignal ? 'bg-red-500' : 'bg-green-500';
+                const textColor = isFakeSignal ? 'text-red-700' : 'text-green-700';
+                const bgColor = isFakeSignal ? 'bg-red-50' : 'bg-green-50';
+                
+                // Calculate width percentage relative to max contribution in this set
+                const maxContrib = Math.max(...result.xai_insights.map(i => Math.abs(i.contribution)));
+                const widthPct = Math.min(100, Math.max(15, (Math.abs(insight.contribution) / maxContrib) * 100));
+
+                return (
+                  <div key={idx} className="flex flex-col gap-1">
+                    <div className="flex justify-between items-end">
+                      <span className="text-xs font-medium text-slate-700 truncate pr-2">{insight.feature}</span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${bgColor} ${textColor} whitespace-nowrap`}>
+                        {isFakeSignal ? 'Pushed to FAKE' : 'Pushed to GENUINE'}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${widthPct}%` }}
+                        transition={{ duration: 0.6, delay: 0.2 + idx * 0.1 }}
+                        className={`h-full ${barColor} rounded-full`}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
